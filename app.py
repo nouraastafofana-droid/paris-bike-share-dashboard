@@ -3,6 +3,9 @@ from helpers import *
 import pandas as pd
 import json
 import requests
+import folium  # Import folium for creating interactive maps
+from streamlit_folium import folium_static
+from streamlit_folium import st_folium
 
 # -----------------------------
 # Translations
@@ -37,6 +40,11 @@ TEXTS = {
         "drive": "J'y vais.",
         "invalid_address": "Adresse introuvable. Essayez une adresse plus précise",
         "ask_location": "Veuillez renseigner une adresse.",
+
+        "map_available_bikes" : "Vélos disponibles",
+        "map_available_ebikes" : "Vélos électriques disponibles",
+        "map_available_mech" : "Vélos mécaniques disponibles",
+        "map_available_dock" : "Bornettes disponibles",
     },
     "en": {
         "title": "Paris Bike Share Dashboard",
@@ -66,6 +74,11 @@ TEXTS = {
         "drive": "I'm driving there.",
         "invalid_address": "Input address not valid!",
         "ask_location": "Please input your location.",
+
+        "map_available_bikes" : "Available bikes",
+        "map_available_ebikes" : "e-Bikes available",
+        "map_available_mech" : "mechanical bikes available",
+        "map_available_dock" : "Docks available",
     }
 }
 
@@ -182,3 +195,48 @@ with col2:
 
 with col3:
     st.metric(label = TEXTS[lang]["station_without_docks"], value = (data["num_docks_available"] == 0).sum())
+# -----------------------------
+# Interactive map
+# -----------------------------
+
+availability_column = (
+    "num_bikes_available"
+    if user_need in ["Louer un vélo", "Rent a bike"]
+    else "num_docks_available"
+)
+
+if search_button_dock == False or search_button == False:
+    center =[ 48.866667, 2.333333] #Coordonnées du centre de Paris
+    m = folium.Map(location=center, zoom_start=12, tiles='cartodbpositron')
+
+    for _, row in data.iterrows():
+        marker_color = get_marker_color( row[availability_column])
+        popup_html = f"""
+        <div style="width: 260px;">
+        <b>{row["name"]}</b><br><br>
+
+        {TEXTS[lang]["map_available_bikes"]}:
+        <b>{row["num_bikes_available"]}</b><br>
+
+        {TEXTS[lang]["map_available_ebikes"]}:
+        <b>{row["electric_bikes"]}</b><br>
+
+        {TEXTS[lang]["map_available_mech"]}:
+        <b>{row["mechanical_bikes"]}</b><br>
+
+        {TEXTS[lang]["map_available_dock"]}:
+        <b>{row["num_docks_available"]}</b>
+        </div>
+        """
+        folium.CircleMarker(
+            location=[row["lat"], row["lon"]],
+            radius=4,
+            color=marker_color,
+            fill=True,
+            fill_color=marker_color,
+            fill_opacity=0.7,
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=row["name"]
+        ).add_to(m)
+
+    st_folium(m, width=900, height=600)

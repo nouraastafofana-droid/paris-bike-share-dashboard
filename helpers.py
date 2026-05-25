@@ -56,13 +56,14 @@ def join(df1, df2):
 
 
 # Function to determine marker color based on the number of bikes available
-def get_marker_color(num_bikes_available):
-    if num_bikes_available > 5:
+def get_marker_color(availability):
+    if availability > 5:
         return 'green'
-    elif 0 < num_bikes_available <= 3:
+    elif 0 < availability <= 5:
         return 'yellow'
     else:
         return 'red'
+
 
 # Define the function to geocode an address
 def geocode(address):
@@ -72,3 +73,46 @@ def geocode(address):
         return None  # Return an empty string if the address is not found
     else:
         return (location.latitude, location.longitude)  # Return the latitude and longitude
+
+
+def get_nearest_station_rent(latlon, df, input_bike_modes):
+    filtered_df = df.copy()
+    if len(bike_type) == 0 or len(bike_type) == 2:
+        filtered_df = filtered_df[ (filtered_df["electric_bikes"] > 0) | (filtered_df["mechanical_bikes"] > 0)]
+
+    elif bike_modes[0] in ["Électrique", "Electric"]:
+        filtered_df = filtered_df[ filtered_df["electric_bikes"] > 0]
+
+    elif bike_modes[0] in ["Mécanique", "Mechanical"]:
+        filtered_df = filtered_df[ filtered_df["mechanical_bikes"] > 0]
+
+    i = 0
+    filtered_df["distance"] = ""
+    while i < len(filtered_df):
+        filtered_df.loc[i, "distance"] = geodesic(latlon, (filtered_df["lat"][i], filtered_df["lon"][i] )).km
+        i = i + 1
+
+    chosen_station = []
+    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["station_id"].iloc[0])
+    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lat"].iloc[0])
+    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lon"].iloc[0])
+
+    return chosen_station
+
+
+def get_nearest_station_return(latlon, df):
+    filtered_df = df.copy()
+    filtered_df = filtered_df[ filtered_df["num_docks_available"] > 0]
+
+    i = 0
+    filtered_df["distance"] = ""
+    while i < len(filtered_df):
+        filtered_df.loc[i, "distance"] = geodesic(latlon, (filtered_df["lat"][i], filtered_df["lon"][i] )).km
+        i = i + 1
+
+    chosen_station = []
+    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["station_id"].iloc[0])
+    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lat"].iloc[0])
+    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lon"].iloc[0])
+
+    return chosen_station
