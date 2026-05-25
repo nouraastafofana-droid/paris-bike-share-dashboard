@@ -1,118 +1,148 @@
 import requests
 import pandas as pd
 import datetime as dt
-from geopy.distance import geodesic  # Import geodesic for calculating distances
-from geopy.geocoders import Nominatim  # Import Nominatim for geocoding
-import folium  # Import folium for creating interactive maps
+import numpy as np
+from geopy.geocoders import Nominatim
+import folium
+import streamlit as st
+
+
+# -----------------------------
+# Data fetching
+# -----------------------------
 
 def get_station_status(url):
-
     response = requests.get(url)
     data = response.json()
-    stations = data["data"]["stations"]
-    df = pd.DataFrame(stations)
+    df = pd.DataFrame(data["data"]["stations"])
 
-    df = df[df["is_installed"] == 1] #Keep only stationsthat are deployed
-    df = df[df["is_renting"] == 1] #Keep only stations that are renting
-    df = df[df["is_returning"] == 1] #Keep only stations accepting bike returns
+    df = df[
+        (df["is_installed"] == 1) &
+        (df["is_renting"] == 1) &
+        (df["is_returning"] == 1)
+    ].drop_duplicates(["station_id", "last_reported"])
 
-    df = df.drop_duplicates(["station_id", "last_reported"]) # Remove duplicate station reports
+    df["last_reported"] = pd.to_datetime(df["last_reported"], unit="s")
 
-    df["last_reported"] = df["last_reported"].apply(lambda x: dt.datetime.fromtimestamp(x)) # Convert Unix timestamp to datetime
-
-    #df['time'] = data['lastUpdatedOther']  # Add the last updated time to the DataFrame
-    #df.time = df.time.map(lambda x: dt.datetime.utcfromtimestamp(x))  # Convert timestamps to datetime
-    #df = df.set_index('time')  # Set the time as the index
-    #df.index = df.index.tz_localize('UTC')  # Localize the index to UTC
-
-    # Extract mechanical and electric bike counts into separate columns
     df["mechanical_bikes"] = df["num_bikes_available_types"].apply(
         lambda x: x[0].get("mechanical", 0)
     )
-
     df["electric_bikes"] = df["num_bikes_available_types"].apply(
         lambda x: x[1].get("ebike", 0)
     )
-
     return df
 
 
 def get_station_information(url):
-
     response = requests.get(url)
     data = response.json()
-    stations = data["data"]["stations"]
-
-    df = pd.DataFrame(stations)
-
-    return df
+    return pd.DataFrame(data["data"]["stations"])
 
 
-def join(df1, df2):
-    df = df1.merge(df2[['station_id', 'name', 'lat', 'lon', 'capacity', 'rental_methods']],
-                how='left',
-                on='station_id')
-    return df
+def join(df_status, df_info):
+    return df_status.merge(
+        df_info[["station_id", "name", "lat", "lon", "capacity", "rental_methods"]],
+        how="left",
+        on="station_id",
+    )
 
 
-# Function to determine marker color based on the number of bikes available
+# -----------------------------
+# Map helpers
+# -----------------------------
+
 def get_marker_color(availability):
     if availability > 5:
-        return 'green'
-    elif 0 < availability <= 5:
-        return 'yellow'
-    else:
-        return 'red'
+        return "green"
+    elif availability > 0:
+        return "yellow"
+    return "red"
 
 
-# Define the function to geocode an address
+# -----------------------------
+# Geocoding
+# TTL 24h : une adresse ne change pas dans la journée
+# -----------------------------
+
+@st.cache_data(ttl=86400)
 def geocode(address):
-    geolocator = Nominatim(user_agent="paris-bike-share-dashboard/1.0")  # Create a geolocator object
-    location = geolocator.geocode(address)  # Geocode the address
-    if location is None:
-        return None  # Return an empty string if the address is not found
-    else:
-        return (location.latitude, location.longitude)  # Return the latitude and longitude
+    geolocator = Nominatim(user_agent="paris-bike-share-dashboard/1.0")
+    location = geolocator.geocode(address)
+    return (location.latitude, location.longitude) if location else None
 
 
-def get_nearest_station_rent(latlon, df, input_bike_modes):
-    filtered_df = df.copy()
-    if len(bike_type) == 0 or len(bike_type) == 2:
-        filtered_df = filtered_df[ (filtered_df["electric_bikes"] > 0) | (filtered_df["mechanical_bikes"] > 0)]
+@st.cache_data(ttl=86400)
+def reverse_geocode(latlon):
+    geolocator = Nominatim(user_agent="paris-bike-share-dashboard/1.0")
+    location = geolocator.reverse(latlon)
+    return location.address if location else None
 
-    elif bike_modes[0] in ["Électrique", "Electric"]:
-        filtered_df = filtered_df[ filtered_df["electric_bikes"] > 0]
 
-    elif bike_modes[0] in ["Mécanique", "Mechanical"]:
-        filtered_df = filtered_df[ filtered_df["mechanical_bikes"] > 0]
+# -----------------------------
+# Distance computation
+# -----------------------------
 
-    i = 0
-    filtered_df["distance"] = ""
-    while i < len(filtered_df):
-        filtered_df.loc[i, "distance"] = geodesic(latlon, (filtered_df["lat"][i], filtered_df["lon"][i] )).km
-        i = i + 1
+def _compute_distances(latlon, df):
+    R = 6371
+    lat1 = np.radians(latlon[0])
+    lon1 = np.radians(latlon[1])
+    lat2 = np.radians(df["lat"].values)
+    lon2 = np.radians(df["lon"].values)
 
-    chosen_station = []
-    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["station_id"].iloc[0])
-    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lat"].iloc[0])
-    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lon"].iloc[0])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
 
-    return chosen_station
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    return R * 2 * np.arcsin(np.sqrt(a))
+
+
+# -----------------------------
+# Station finders
+# -----------------------------
+
+def get_nearest_station_rent(latlon, df, bike_type):
+    filtered = df.copy()
+
+    if not bike_type or len(bike_type) == 2:
+        filtered = filtered[
+            (filtered["electric_bikes"] > 0) | (filtered["mechanical_bikes"] > 0)
+        ]
+    elif any(b in bike_type for b in ["Électrique", "Electric"]):
+        filtered = filtered[filtered["electric_bikes"] > 0]
+    elif any(b in bike_type for b in ["Mécanique", "Mechanical"]):
+        filtered = filtered[filtered["mechanical_bikes"] > 0]
+
+    filtered = filtered.reset_index(drop=True)
+    filtered["distance"] = _compute_distances(latlon, filtered)
+
+    nearest = filtered.loc[filtered["distance"].idxmin()]
+    return [nearest["station_id"], nearest["lat"], nearest["lon"]]
 
 
 def get_nearest_station_return(latlon, df):
-    filtered_df = df.copy()
-    filtered_df = filtered_df[ filtered_df["num_docks_available"] > 0]
+    filtered = df[df["num_docks_available"] > 0].copy().reset_index(drop=True)
+    filtered["distance"] = _compute_distances(latlon, filtered)
 
-    i = 0
-    filtered_df["distance"] = ""
-    while i < len(filtered_df):
-        filtered_df.loc[i, "distance"] = geodesic(latlon, (filtered_df["lat"][i], filtered_df["lon"][i] )).km
-        i = i + 1
+    nearest = filtered.loc[filtered["distance"].idxmin()]
+    return [nearest["station_id"], nearest["lat"], nearest["lon"]]
 
-    chosen_station = []
-    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["station_id"].iloc[0])
-    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lat"].iloc[0])
-    chosen_station.append(filtered_df[filtered_df["distance"] == min(filtered_df["distance"])]["lon"].iloc[0])
 
-    return chosen_station
+# -----------------------------
+# Routing
+# -----------------------------
+
+def run(chosen_station, iamhere):
+    start = f"{iamhere[1]},{iamhere[0]}"
+    end = f"{chosen_station[2]},{chosen_station[1]}"
+    url = (
+        f"http://router.project-osrm.org/route/v1/driving/"
+        f"{start};{end}?geometries=geojson"
+    )
+
+    r = requests.get(url, headers={"Content-type": "application/json"})
+    route = r.json()["routes"][0]
+
+    coordinates = [[c[1], c[0]] for c in route["geometry"]["coordinates"]]
+    duration = round(route["duration"] / 60, 1)
+
+    return coordinates, duration

@@ -6,3 +6,4 @@ folium==0.16.0
 streamlit-folium==0.20.0
 plotly
 geopy
+numpy
