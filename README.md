@@ -2,6 +2,7 @@
 
 An interactive data application for visualizing and navigating the Vélib' Métropole bike-share network across Paris, built with Python and Streamlit.
 
+**Live demo** : [paris-bike-share-dashboard.streamlit.app](https://paris-bike-share-dashboard.streamlit.app)
 ---
 
 ## Overview
